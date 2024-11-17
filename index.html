@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<title>BTD6 Save Extractor</title>
+	<meta charset="UTF-8">
+	<meta name="description" content="Extract map saves from a BTD6 primary save">
+	<meta name="author" content="transcendental">
+	<!--- take a shot for every weird decision the auto formatter made --->
+</head>
+
+<body>
+	<script src="https://unpkg.com/fflate@0.8.2"></script>
+	<div id="header">
+		<h1>BTD6 save extractor</h1>
+		<p>Extract <a href="https://github.com/Trixep/SalvageIt">SalvageIt</a> compatible save files from a BTD6 primary
+			save.</p>
+		<input type="file" id="file" accept=".Save">Select a Bloons TD 6 save file</input>
+		<p>The save file is located at <code>[Steam user
+				data]/960090/local/link/PRODUCTION/current/Profile.Save</code> on Linux
+			and <code>/sdcard/Android/data/com.ninjakiwi.bloonstd6/files/link/PRODUCTION/current/Profile.Save</code> on
+			Android. Other platforms should store it in a similar place.</p>
+		<p>This does work with the Netflix version; other weird alt versions should work too.</p>
+		<h2 id="js">This page requires JavaScript!</h2>
+		<script>document.getElementById("js").style = "display:none"</script>
+	</div>
+	<div id="explanation">
+		<p>Saves present in your file will show up below. Click in the box to download.</p>
+		<p>Some maps and modes have strange names, you might have to do some educated guessing on which entry
+			corresponds to the save you want.</p>
+		<p>All saves show up, including things like challenges and quests, though I'm not sure if importing them works
+			correctly.</p>
+	</div>
+	<div id="maps"></div>
+	<p id="credit">This page is public domain. Originally created by transcendental</p>
+	<style>
+		div:not(#maps) {
+			background-color: #eee;
+			border-radius: 1em;
+			margin: 1em;
+			padding: 1em;
+		}
+
+		body,
+		#maps {
+			background-color: lightskyblue;
+		}
+
+		#credit {
+			text-align: center;
+			font-size: .5em;
+		}
+	</style>
+	<script>
+
+		const salt_start = 52;
+		const salt_length = 24;
+		const data_start = salt_start + salt_length;
+		const key_length = 16;
+		const iv_length = 16;
+		const iterations = 10;
+
+		const reader = new FileReader();
+
+		function updateSavegame() {
+			file = document.getElementById('file').files[0];
+			if (!file) return;
+			reader.readAsArrayBuffer(file);
+		}
+
+		reader.onloadend = async function () {
+			content = new Uint8Array(reader.result);
+			if (content.length == 0) return;
+
+			salt = content.slice(salt_start, salt_start + salt_length);
+
+			// key = pbkdf2(32, 0 (??), "11", 2, salt, 10, 0.0 (??))
+			pass = await crypto.subtle.importKey("raw", new Uint8Array([49, 49]), "PBKDF2", false, ["deriveKey"]);
+			key = await crypto.subtle.deriveKey({
+				name: "PBKDF2",
+				salt,
+				iterations,
+				hash: "SHA-1",
+			},
+				pass,
+				{name: "AES-CBC", length: 8 * (iv_length + key_length)},
+				true,
+				["encrypt", "decrypt"],
+			);
+
+			raw_key = new Uint8Array(await crypto.subtle.exportKey("raw", key));
+
+			// so for some reason the iv is the first half of this and the key is the second, i don't know crypto but that seems kinda silly
+			iv = raw_key.slice(0, 16);
+			decryption_key = raw_key.slice(16);
+
+			compressed_data = new Uint8Array(await crypto.subtle.decrypt(
+				{
+					name: "AES-CBC",
+					iv,
+				},
+				await crypto.subtle.importKey("raw", decryption_key, "AES-CBC", false, ["decrypt"]),
+				content.slice(data_start)
+			));
+
+			// why can't i use decompression stream? it yells at me and says the headers are corrupt and i don't understand why
+			save = JSON.parse(new TextDecoder().decode(fflate.unzlibSync(compressed_data)));
+			updateMapList(save);
+		}
+
+		function updateMapList(savegame) {
+			maps = savegame?.savedMaps;
+			if (!maps) return;
+			document.getElementById('maps').innerHTML = Object.entries(maps).map(buildMapElement).join('');
+		}
+
+		function buildMapElement([name, obj]) {
+			return `<div class="map" id="${name}" onclick="saveGame('${name}')">
+				<h2>${name}</h2>
+				<p>Round ${obj.round}</p>
+				<p>${obj.mapDifficulty} / ${obj.modeName}</p>
+				</div>`;
+		}
+
+		function saveGame(mapName) {
+			const json = save.savedMaps[mapName];
+			if (!json) return;
+			const el = document.createElement('a');
+			el.download = `${mapName} ${json.modeName} - Round ${json.round}.json`;
+			el.href = "data:application/octet-stream;base64," + btoa(JSON.stringify(json));
+			el.style = "display:none";
+			document.body.appendChild(el);
+			el.click();
+			document.body.removeChild(el);
+		}
+
+		document.getElementById('file').addEventListener("change", updateSavegame);
+		updateSavegame();
+	</script>
+</body>
+
+</html>
